@@ -23,23 +23,23 @@ type TLSCache struct {
 	conn      TLSConn
 	HandStaus HandShakeStatus
 	writeCnt  uint32
-	data      chan []byte
+	out       tlsBuf
+	in        tlsBuf
+	tls       *tls.Conn
 }
 
 func New() (t *TLSCache, err error) {
 	t = &TLSCache{
-		data: make(chan []byte),
+		out: *newTLSBuf(),
+		in:  *newTLSBuf(),
 	}
 	conf := &tls.Config{
 		InsecureSkipVerify: true,
 	}
 
-	localListener, err := net.Listen("tcp", "localhost:6666")
-	if err != nil {
-		log.Println(err)
-	}
+	t.tls = tls.Client(&localConn{&t.out, &t.in}, conf)
 	go func() {
-		t.conn.tls, err = tls.Dial("tcp", "localhost:6666", conf)
+		err = t.tls.Handshake()
 		if err != nil {
 			log.Println(err)
 			return
@@ -48,38 +48,18 @@ func New() (t *TLSCache, err error) {
 		t.HandStaus = HandOK
 	}()
 
-	t.conn.raw, err = localListener.Accept()
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	// go func() {
-	// 	for {
-	// 		data := make([]byte, 2048)
-	// 		n, err := t.conn.raw.Read(data)
-	// 		if err != nil {
-	// 			log.Println(err)
-	// 			break
-	// 		}
-	// 		if n > 0 {
-	// 			t.data <- data[:n]
-	// 		}
-	// 	}
-	// }()
-
 	return
 }
 
 func (t *TLSCache) Encode(value []byte) []byte {
-	t.conn.tls.Write(value)
+	t.tls.Write(value)
 	return t.Read()
 }
 
 func (t *TLSCache) Decode(value []byte) []byte {
 	data := make([]byte, 2048)
-	t.conn.raw.Write(value)
-	if n, err := t.conn.tls.Read(data); err == nil {
+	t.out.Write(value)
+	if n, err := t.tls.Read(data); err == nil {
 		return data[:n]
 	} else {
 		log.Println(err)
@@ -87,18 +67,9 @@ func (t *TLSCache) Decode(value []byte) []byte {
 	return []byte{}
 }
 
-// func (t *TLSCache) Read() []byte {
-// 	select {
-// 	case data := <-t.data:
-// 		return data
-// 	default:
-// 		return []byte{}
-// 	}
-// }
-
 func (t *TLSCache) Read() []byte {
 	data := make([]byte, 2048)
-	n, _ := t.conn.raw.Read(data)
+	n, _ := t.in.Read(data)
 	if n > 0 {
 		return data[0:n]
 	} else {
@@ -113,7 +84,7 @@ func (t *TLSCache) HandShake(value []byte, len uint32) []byte {
 		t.writeCnt = len
 	}
 
-	n, _ := t.conn.raw.Write(value)
+	n, _ := t.out.Write(value)
 
 	if t.writeCnt == 0 {
 		return []byte{}
